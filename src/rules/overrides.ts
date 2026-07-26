@@ -114,9 +114,14 @@ export const OVERRIDES: Override[] = [
     note: 'business-updates.facebook.com kept as Accounts per the explicit listing, not Social Media',
   },
   {
-    emails: ['customer.service@servicing.synchrony.com', 'support@betterment.com', 'estatement@bankofbaroda.bank.in', 'subscriptions@subscriptions.treas.gov'],
+    emails: ['subscriptions@subscriptions.treas.gov'],
+    action: 'keep',
     category: 'money',
-    note: 'treas.gov overrides the .gov safety allowlist, by explicit request',
+    note: 'labelled Money but pinned to the inbox by explicit request',
+  },
+  {
+    emails: ['customer.service@servicing.synchrony.com', 'support@betterment.com', 'estatement@bankofbaroda.bank.in'],
+    category: 'money',
   },
   {
     emails: [
