@@ -3,7 +3,9 @@
 Goal: hold the Gmail inbox at a low, manageable number without hand-sorting 3000+ messages,
 and without an AI in the hot path for mail we already know is noise.
 
-Status: Phase 0 complete. Phase 1 blocked on Gmail OAuth consent (see "Blocking human steps").
+Status as of 2026-07-26: **Phases 0-4 applied and verified.** Inbox went 4,228 -> 528. Filters run in
+quarantine mode pending a ~7-day review. Phase 5 (Codex automation) is configured and PAUSED.
+Phase 6 (dashboard view) is not started.
 
 ---
 
@@ -12,7 +14,7 @@ Status: Phase 0 complete. Phase 1 blocked on Gmail OAuth consent (see "Blocking 
 Two parts, one system, joined by a shared rule ledger:
 
 ```
-        inbox-rules.yaml  ← single source of truth, human-approved, in git
+   src/rules/{overrides,categories}.ts  ← the rule ledger, human-approved, in git
                  │ compile (deterministic, idempotent)
                  ▼
         Gmail filters (free, instant, applied on arrival)
@@ -34,7 +36,7 @@ filter handles it forever. Token cost and latency decline weekly instead of bein
 |---|---|---|
 | Code home | Standalone `InboxJanitor` repo | Clean blast radius; a scanner bug cannot take down MegaNewsletterDashboard |
 | AI runtime (Part 2) | Codex cron, like `mega-newsletter` | Proven runtime, connectors already authorized, runs while the Mac is off |
-| Rule ledger | `inbox-rules.yaml` in git, editable from the dashboard | Versioned and diffable — every rule change has a commit and an author |
+| Rule ledger | typed TS modules in git: `src/rules/overrides.ts` (per-sender) and `src/rules/categories.ts` (domain → label) | Versioned and diffable, and unit-testable in a way YAML is not. `out/inbox-rules.draft.yaml` is a *generated review artifact*, not the source of truth |
 
 ---
 
@@ -64,14 +66,28 @@ Per-sender engagement signals:
 - **B — UNSUBSCRIBE THEN TRASH**: same, but a legitimate sender with a working unsubscribe.
 - **C — ARCHIVE, NOT DELETE**: receipts, shipping, order confirmations, statements. Searchable but
   out of the inbox. Likely a large slice of the 3000 — deleting it would be the wrong call.
-- **D — REVIEW**: ambiguous → handed to Part 2.
+- **D — REVIEW**: ambiguous. Archived rather than left in the inbox, per the 2026-07-26 review.
+- **L — LOW VOLUME**: fewer than 3 messages ever. Split out because 265 of 325 review-tier senders
+  were long tail, burying the ~60 worth a decision.
+
+Per-sender entries in `src/rules/overrides.ts` beat every tier above, including the allowlist.
 
 ### 1B. Review artifact
 Sorted by volume descending; the top ~100 senders should cover ~80% of the backlog. Rendered with
 evidence and sample subjects, accept/reject per sender. Target review time: ~30 minutes.
 
+### 1B-bis. Labels
+Nine `Filed/*` categories plus `Janitor/{Quarantine,Unsubscribe}`. All file on arrival except
+`Filed/Newsletters`, which stays visible so mega-newsletter can still discover and digest it.
+An urgent-looking subject (`URGENT_SUBJECT`) keeps any message visible regardless of category —
+including building and utility vocabulary, because "Water Shutdown Reminder" is same-day
+consequential and reads as routine to every generic alert heuristic.
+
+`assertManaged()` restricts creation and deletion to the `Filed/` and `Janitor/` prefixes, so the
+12 hand-made labels in the account are structurally unreachable.
+
 ### 1C. Compiler
-`inbox-rules.yaml` → Gmail filters via `users.settings.filters`. Idempotent (list → diff → apply).
+The rule ledger → Gmail filters via `users.settings.filters`. Idempotent (list → diff → apply).
 Senders batched into grouped `from:(a OR b OR …)` filters to stay under the 1000-filter cap.
 Our filters are tagged so hand-made filters are never clobbered.
 
@@ -118,13 +134,16 @@ Two sections make it worth reading:
 1. **Scope choice is a structural invariant.** Request `gmail.modify`, never `https://mail.google.com/`.
    Trash works; `users.messages.batchDelete` becomes *impossible at the API level*.
    Enforced-always beats verified-once.
-2. **OAuth publishing status.** If the client is in "Testing", refresh tokens expire every 7 days and
-   both automations rot silently. Must be confirmed in the console.
+2. **OAuth publishing status.** Resolved: InboxJanitor has its own published GCP project. A client
+   left in "Testing" expires refresh tokens every 7 days and both automations would rot silently.
 3. **`gmail.metadata` scope cannot use search queries** (`q` is rejected on `messages.list`).
    The scanner therefore needs `gmail.readonly`.
 4. **Cross-automation seam.** A delete filter catching a mega-newsletter source would silently break
-   the digest with no error surfaced anywhere. The compiler must refuse to emit any delete rule that
-   overlaps the live `_rules.md` include list.
+   the digest with no error surfaced anywhere. Enforced by `assertNoNewsletterCapture()` in
+   `src/apply/filters.ts`, which refuses to compile rather than warn.
+7. **Stale snapshots.** The sweep acts on a local SQLite snapshot. Re-running after a sweep would
+   re-trash anything rescued from Trash or Quarantine, so it refuses past 10% drift against a live
+   inbox count.
 5. **Read-state is a noisy signal** — never sufficient alone; always combined with reply/star/volume.
 6. **Filters act on arrival only.** Backlog cleanup is a separate operation with a different risk
    profile; do not conflate the two.
@@ -139,9 +158,11 @@ Probed against the existing MegaNewsletterDashboard OAuth client:
 - ✅ Granted scopes today: `documents`, `drive.readonly` — **no Gmail scope**, so re-consent is required.
 - 🟡 Gmail API appears **already enabled** in the GCP project: the probe returned
   `403 insufficientPermissions`, not `SERVICE_DISABLED`. Confirm at consent time.
-- ⚠️ Publishing status **unknown** — needs one look at the console.
+- ✅ Resolved by giving InboxJanitor its own published GCP project and Desktop OAuth client, rather
+  than widening the dashboard's grant — adding restricted scopes to an already-verified project can
+  force it back into review, which would have put a working daily automation at risk.
 
-### Blocking human steps
+### Console steps taken (historical)
 
 1. Open the Google Cloud console for the project behind `GOOGLE_DRIVE_CLIENT_ID`.
 2. Check **OAuth consent screen → Publishing status**. If it says *Testing*, publish it
@@ -156,12 +177,23 @@ Probed against the existing MegaNewsletterDashboard OAuth client:
 
 ## 6. Sequencing
 
-| Phase | Work | Est. | Mutates Gmail? |
-|---|---|---|---|
-| 0 | Verify OAuth status + scopes, read-only smoke test | 0.5h | no |
-| 1 | Scanner + SQLite + sender report | 2–3h | no |
-| 2 | Review report → rule ledger → compiler → quarantine filters | 2h | filters only |
-| 3 | Backlog sweep: dry-run → apply | 1h | **yes, to Trash** |
-| 4 | Unsubscribe worklist | 1h | no |
-| 5 | Codex janitor automation + memory.md | 2h | **yes, to Trash** |
-| 6 | Dashboard Inbox view + rule approval queue | 2–3h | no |
+| Phase | Work | Status |
+|---|---|---|
+| 0 | Verify OAuth status + scopes | done — needed its own GCP project, see `docs/oauth-setup.md` |
+| 1 | Scanner + SQLite + sender report | done — 4,483 messages, 677 senders |
+| 2 | Rule ledger + compiler + quarantine filters | done — 11 labels, 22 filters, 322 senders |
+| 3 | Backlog sweep | done — 4,027 messages moved, 726 to Trash |
+| 4 | Unsubscribe worklist | done — 64 senders; owner worked the list, many links dead |
+| 5 | Codex janitor automation | configured, **PAUSED** until the quarantine flip |
+| 6 | Dashboard Inbox view + rule approval queue | not started |
+
+### Outstanding
+
+1. ~7 days after 2026-07-26: review `Janitor/Quarantine`, then
+   `npm run apply:filters -- --apply --mode=trash`. Until then nothing new is deleted.
+2. Re-scan afterwards for a clean baseline — the local snapshot is deliberately stale and the sweep
+   refuses to run against it.
+3. Set `notification_policy` to all-runs in the Codex UI for the first two weeks.
+4. Unpause the automation. It has never run; expect 2-3 runs of tuning.
+5. Feed its `## Proposed Rules` output into `src/rules/overrides.ts` — that is the feedback loop
+   closing, and the reason the AI's cost should decline rather than compound.

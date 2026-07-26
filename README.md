@@ -53,5 +53,22 @@ backlog. Prune what you disagree with in the draft ledger, then save it as `inbo
 
 ## Status
 
-Phases 0 and 1 are built. Phases 2–6 (compiler, backlog sweep, unsubscribe worklist, Codex
-automation, dashboard view) are specified in [PLAN.md](PLAN.md) but not yet implemented.
+**Live since 2026-07-26.** Inbox 4,228 -> 528: 11 labels created, 22 filters covering 322 senders,
+4,027 messages swept (726 to Trash). Verified against live Gmail — 103 starred messages still in the
+inbox, zero starred or `Filed/*` mail in Trash.
+
+Filters run in **quarantine mode**: noise is labelled `Janitor/Quarantine` and skips the inbox
+rather than being trashed, pending a ~7-day review. Part 2 (the Codex janitor) is configured and
+paused. See [PLAN.md](PLAN.md) for what is outstanding.
+
+## How a decision gets made
+
+`src/rules/disposition.ts` is the single place that decides what happens to a message — the report,
+the filter compiler and the backlog sweep all call it, so they cannot disagree. Precedence, most to
+least authoritative:
+
+1. Starred — a per-message instruction from you, nothing outranks it
+2. A per-sender rule in `src/rules/overrides.ts` (reviewed by hand; beats even the safety allowlist)
+3. Tier from `src/report/classify.ts` (noise / transactional / protected / undecided)
+4. Category filing from `src/rules/categories.ts`, unless the subject looks urgent
+5. Age — anything older than 180 days leaves the inbox
