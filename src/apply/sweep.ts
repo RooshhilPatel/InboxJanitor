@@ -27,6 +27,34 @@ interface Bucket {
   removeLabelIds: string[];
 }
 
+/**
+ * The sweep acts on a local snapshot. Once it has run, that snapshot says "in the inbox" about mail
+ * that is now filed or trashed — so a second run would re-trash anything rescued from Trash or
+ * pulled back out of Quarantine, silently undoing a deliberate correction. Refuse rather than
+ * explain it in a comment nobody reads at the wrong moment.
+ */
+async function assertSnapshotFresh(localInboxCount: number): Promise<void> {
+  let live = 0;
+  let pageToken: string | undefined;
+  do {
+    const page = await gmailFetch<{ messages?: unknown[]; nextPageToken?: string }>('/messages', {
+      params: { q: 'in:inbox', maxResults: '500', ...(pageToken !== undefined ? { pageToken } : {}) },
+    });
+    live += (page.messages ?? []).length;
+    pageToken = page.nextPageToken;
+  } while (pageToken !== undefined);
+
+  const drift = Math.abs(live - localInboxCount) / Math.max(localInboxCount, 1);
+  console.log(`local snapshot: ${localInboxCount} inbox messages; live Gmail: ${live}`);
+  if (drift > 0.1) {
+    throw new Error(
+      `Snapshot is stale (${Math.round(drift * 100)}% drift). Re-running would act on mail that has ` +
+        `already moved and could re-trash anything you rescued. Run \`npm run scan\` first, or pass ` +
+        `--force if you are certain.`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const apply = process.argv.includes('--apply');
   console.log(apply ? 'APPLYING backlog sweep\n' : 'DRY RUN — pass --apply to move mail\n');
@@ -102,6 +130,8 @@ async function main(): Promise<void> {
     buckets.set(key, bucket);
     summary.set(key, (summary.get(key) ?? 0) + 1);
   }
+
+  if (!process.argv.includes('--force')) await assertSnapshotFresh(messages.length);
 
   console.log(`${messages.length} inbox messages in the local scan`);
   if (unknown > 0) console.log(`${unknown} skipped — sender not in the scan aggregate`);
