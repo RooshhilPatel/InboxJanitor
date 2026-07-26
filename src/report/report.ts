@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { openDb } from '../scan/db.ts';
 import { classify, readRate, type SenderStats, type Tier, type Verdict } from './classify.ts';
+import { CATEGORIES, categorize, type Category } from '../rules/categories.ts';
 
 const OUT_DIR = fileURLToPath(new URL('../../out/', import.meta.url));
 const DAY = 86_400_000;
@@ -115,6 +116,33 @@ function loadSenders(): Array<SenderStats & { verdict: Verdict }> {
   return senders;
 }
 
+function categoryRows(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>): string {
+  const tally = new Map<Category, { senders: number; inbox: number }>();
+  let uncategorized = { senders: 0, inbox: 0 };
+
+  for (const sender of senders) {
+    const category = categorize(sender.email, sender.domain);
+    if (category === null) {
+      uncategorized = { senders: uncategorized.senders + 1, inbox: uncategorized.inbox + sender.inInbox };
+      continue;
+    }
+    const bucket = tally.get(category) ?? { senders: 0, inbox: 0 };
+    bucket.senders += 1;
+    bucket.inbox += sender.inInbox;
+    tally.set(category, bucket);
+  }
+
+  const rows = (Object.keys(CATEGORIES) as Category[])
+    .map((category) => {
+      const bucket = tally.get(category) ?? { senders: 0, inbox: 0 };
+      const spec = CATEGORIES[category];
+      return `<tr><td><code>${spec.label}</code></td><td>${spec.skipInbox ? 'yes' : 'no — stays visible'}</td><td class="n">${bucket.senders}</td><td class="n">${bucket.inbox}</td></tr>`;
+    })
+    .join('');
+
+  return `${rows}<tr><td class="muted">uncategorized</td><td class="muted">n/a</td><td class="n">${uncategorized.senders}</td><td class="n">${uncategorized.inbox}</td></tr>`;
+}
+
 function renderHtml(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>): string {
   const totals = new Map<Tier, { senders: number; messages: number; inbox: number }>();
   for (const sender of senders) {
@@ -136,8 +164,11 @@ function renderHtml(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>):
     const rows = group
       .map((s) => {
         const subjects = s.sampleSubjects.map((x) => `<li>${escapeHtml(x)}</li>`).join('');
+        const category = categorize(s.email, s.domain);
+        const label = category === null ? '<span class="muted">—</span>' : escapeHtml(CATEGORIES[category].label);
         return `<tr>
           <td><strong>${escapeHtml(s.displayName ?? s.email)}</strong><br><code>${escapeHtml(s.email)}</code></td>
+          <td>${label}</td>
           <td class="n">${s.total}</td>
           <td class="n">${s.inInbox}</td>
           <td class="n">${Math.round(readRate(s) * 100)}%</td>
@@ -148,7 +179,7 @@ function renderHtml(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>):
       })
       .join('');
     return `<h2>${TIER_LABEL[tier]} <span class="count">${group.length} senders</span></h2>
-      <table><thead><tr><th>Sender</th><th>Msgs</th><th>Inbox</th><th>Read</th><th>90d</th><th>Why</th><th>Recent subjects</th></tr></thead><tbody>${rows}</tbody></table>`;
+      <table><thead><tr><th>Sender</th><th>Label</th><th>Msgs</th><th>Inbox</th><th>Read</th><th>90d</th><th>Why</th><th>Recent subjects</th></tr></thead><tbody>${rows}</tbody></table>`;
   }).join('');
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>InboxJanitor — sender review</title><style>
@@ -164,11 +195,17 @@ function renderHtml(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>):
     code { font-size:.85em; color:var(--muted); }
     ul.subj { margin:0; padding-left:1rem; color:var(--muted); font-size:.85em; }
     p.note { color:var(--muted); }
+    .muted { color:var(--muted); }
   </style></head><body>
     <h1>InboxJanitor — sender review</h1>
     <p class="note">Generated ${new Date().toISOString()}. Nothing has been changed in Gmail. Work top-down: the
     highest-volume senders in each tier account for most of the backlog.</p>
     <table><thead><tr><th>Tier</th><th class="n">Senders</th><th class="n">Messages</th><th class="n">In inbox</th></tr></thead><tbody>${summary}</tbody></table>
+    <h2>Labels <span class="count">machine-managed namespace only</span></h2>
+    <p class="note">Your hand-made labels (Receipts, Land, Boat, Taxes, …) are never created, renamed, or
+    deleted by this tool. "Skips inbox" means the mail is filed on arrival instead of landing in front of
+    you; urgent-looking subjects stay visible regardless of category.</p>
+    <table><thead><tr><th>Label</th><th>Skips inbox</th><th class="n">Senders</th><th class="n">In inbox</th></tr></thead><tbody>${categoryRows(senders)}</tbody></table>
     ${sections}
   </body></html>`;
 }
@@ -199,6 +236,25 @@ archive_after_days: ${ARCHIVE_AFTER_DAYS}
 
 # Never applies to a starred message, at any tier. Stars are respected per message, not per sender.
 protect_starred: true
+
+# Machine-managed labels. Only these two namespaces are ever created, renamed, or deleted -- your
+# hand-made labels (Receipts, Land, Boat, 2024 Taxes, ...) are structurally out of reach.
+# skip_inbox: mail is filed on arrival. An urgent-looking subject overrides it and stays visible.
+labels:
+${(Object.keys(CATEGORIES) as Category[])
+  .map((c) => `  - name: ${CATEGORIES[c].label}\n    skip_inbox: ${CATEGORIES[c].skipInbox}`)
+  .join('\n')}
+  - name: Janitor/Quarantine
+    skip_inbox: true
+  - name: Janitor/Unsubscribe
+    skip_inbox: false
+
+# Stale labels from the retired MegaNewsletter labelling scheme, safe to delete.
+delete_labels:
+  - MegaNewsletter/NeedsReview/2026-04-28
+  - MegaNewsletter/NeedsReview/2026-04-29
+  - MegaNewsletter/Error/2026-04-29
+  - MegaNewsletter/Digested/2026-04-29
 
 # Evaluated before every other rule. Nothing here is ever filtered.
 never_touch:

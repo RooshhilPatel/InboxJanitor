@@ -3,6 +3,8 @@
  * inputs always produce the same tier and any surprising result can be traced to a named signal.
  */
 
+import { categorize } from '../rules/categories.ts';
+
 export type Tier =
   | 'E_NEVER_TOUCH'
   | 'A_AUTO_TRASH'
@@ -108,11 +110,18 @@ export function classify(sender: SenderStats): Verdict {
   if (reasons.length > 0) return { tier: 'E_NEVER_TOUCH', reasons };
 
   // --- Tier C: keep, but out of the inbox. Searchable history worth more than inbox space. ---
-  if (!sender.bulk && matchesAny(sender.sampleSubjects, TRANSACTIONAL_SUBJECT)) {
+  // Bulk headers are not a counter-signal here: Amazon order confirmations, Airbnb reservations and
+  // bank statements all ship List-Unsubscribe. Gating this on `!bulk` sent 95 Amazon order
+  // confirmations to the review pile while identical Airbnb mail filed correctly.
+  const filedCategory = categorize(sender.email, sender.domain);
+  if (matchesAny(sender.sampleSubjects, TRANSACTIONAL_SUBJECT)) {
     return {
       tier: 'C_ARCHIVE',
       reasons: ['transactional mail — archive rather than delete so it stays searchable'],
     };
+  }
+  if (filedCategory !== null && sender.bulk && sender.total >= MIN_VOLUME) {
+    return { tier: 'C_ARCHIVE', reasons: [`known ${filedCategory} sender — file it rather than delete it`] };
   }
 
   // --- Tiers A/B: bulk mail you demonstrably do not read. ---
