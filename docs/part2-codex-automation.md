@@ -3,9 +3,15 @@
 Drop-in prompt for a Codex cron, modelled on the proven `mega-newsletter` automation. Schedule it
 **after** the newsletter run so newsletters are already out of the inbox.
 
-- Automation ID: `inbox-janitor`
-- Memory: `$CODEX_HOME/automations/inbox-janitor/memory.md`
-- Suggested schedule: daily, 13:30 America/New_York (one hour after mega-newsletter)
+**Deployed 2026-07-26**, paused pending the quarantine flip.
+
+- Automation ID: `inbox-janitor-codex-automation`
+- Memory: `~/.codex/automations/inbox-janitor-codex-automation/memory.md` — Codex derives this path
+  from the automation `id`; the file only has to exist. Seeded with a cutoff so the first run starts
+  fresh instead of reprocessing the backlog the filters already swept.
+- Schedule: daily 13:30 America/New_York, one hour after mega-newsletter (which takes ~7 minutes)
+- `model = gpt-5.6-sol`, `reasoning_effort = high`, `execution_environment = local`
+- `cwds` points at this repo, which is what lets the prompt read the live rule ledger
 
 Do not enable this until Phase 2 filters have completed a quarantine review. Running it against an
 unfiltered 3000-message inbox burns tokens on mail that a free Gmail filter should have handled.
@@ -40,11 +46,18 @@ Never trash a message unless every verification check passes.
 If extraction fails or a tool call errors for a message, leave that message untouched.
 If the triage log fails verification, trash nothing at all.
 Do not apply Gmail labels as a fallback.
+Do not apply Filed/* labels at all. The deterministic compiler owns label application so exactly one
+system decides where mail files. This automation's output is trashed noise plus proposed rules -- a
+sender that earns a rule gets labelled by the compiler on its next arrival, not by you.
 Do not process anything already in Trash or Spam. Trash may be searched for diagnostics only.
 When uncertain, classify REVIEW. An unnecessary REVIEW costs me five seconds; a wrong NOISE costs
 me a missed bill, reply, or deadline.
 
 NEVER-TRASH LIST
+Before classifying, read src/rules/overrides.ts in the working directory. Every sender with
+action: 'keep' is never trashed, and nothing in the people block is ever touched. That file is the
+source of truth; the list below is a summary that may lag it.
+
 These are protected regardless of any other signal:
 - any sender I have ever replied to or emailed
 - any message in a thread containing a message I sent
@@ -57,6 +70,11 @@ These are protected regardless of any other signal:
 - anything from a sender listed in the mega-newsletter Drive doc "_rules.md" under Always include
 - the mega-newsletter core sources: crew@morningbrew.com, morningbrew@mail.sailthru.com,
   news@alphasignal.ai, bullst@substack.com, dan@tldrnewsletter.com, any tldrnewsletter.com address
+
+STANDING SENDER RULES
+notify@condocontrol.com -- trash any message still unread and older than 30 days. Building notices
+are worthless once stale. Read messages are left alone; the rule is about mail that was ignored, not
+mail that was seen. This cannot be expressed as a Gmail filter, which is why it lives here.
 
 STEP 1 - DETERMINE WINDOW
 Read the last successful cutoff from automation memory. If absent, use the last 24 hours.
@@ -175,3 +193,9 @@ top proposed rules, and anything that arrived after the cutoff for the next run 
   shrinking one.
 - **Per-sender tallies in memory** are what make the two-run promotion threshold possible; a single
   run cannot tell a recurring sender from a one-off.
+- **Labels are deliberately off-limits.** Two systems applying `Filed/*` with different logic is how
+  a taxonomy rots. The compiler owns filing; this automation earns a sender its filter and then
+  stops caring about it.
+- **The prompt reads `src/rules/overrides.ts` rather than trusting its own copy** of the never-trash
+  list. A hardcoded duplicate drifts from the ledger the moment a rule changes, and the drift is
+  invisible until something is wrongly trashed.
