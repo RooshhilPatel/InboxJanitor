@@ -80,14 +80,23 @@ export class QuotaBucket {
 // 200 units/sec sustained = 40 metadata fetches/sec, and 12,000 units/min against a 15,000 ceiling.
 const bucket = new QuotaBucket(Number(process.env.SCAN_UNITS_PER_SEC ?? '200'));
 
-/** Quota cost per call. Uniform 5 covers messages.list and messages.get; profile is cheaper. */
+/** Quota cost per call. 5 covers messages.list/get and label writes; batchModify costs 50. */
 const UNIT_COST = 5;
+
+export interface RequestOptions {
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  params?: Record<string, string | string[]>;
+  body?: unknown;
+  /** Gmail quota units this call consumes. Defaults to 5. */
+  cost?: number;
+}
 
 /**
  * A 403 carrying rateLimitExceeded and a 429 are both transient. Any other 403 — almost always
  * insufficient scope — is a real failure and throws immediately rather than retrying pointlessly.
  */
-async function gmailFetch<T>(path: string, params: Record<string, string | string[]> = {}): Promise<T> {
+export async function gmailFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { method = 'GET', params = {}, body, cost = UNIT_COST } = options;
   const url = new URL(`${BASE}${path}`);
   for (const [key, value] of Object.entries(params)) {
     if (Array.isArray(value)) value.forEach((v) => url.searchParams.append(key, v));
@@ -96,21 +105,30 @@ async function gmailFetch<T>(path: string, params: Record<string, string | strin
 
   const maxAttempts = 8;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    await bucket.take(UNIT_COST);
+    await bucket.take(cost);
     const token = await getAccessToken();
-    const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+    const response = await fetch(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 No Content is how label deletion succeeds.
+    if (response.status === 204) return undefined as T;
     if (response.ok) return (await response.json()) as T;
 
-    const body: unknown = await response.json().catch(() => ({}));
+    const errorBody: unknown = await response.json().catch(() => ({}));
     const reason =
-      (body as { error?: { errors?: Array<{ reason?: string }> } }).error?.errors?.[0]?.reason ?? '';
+      (errorBody as { error?: { errors?: Array<{ reason?: string }> } }).error?.errors?.[0]?.reason ?? '';
     const rateLimited =
       response.status === 429 || reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded';
     const transient = rateLimited || (RETRYABLE.has(response.status) && response.status !== 403);
 
     if (!transient || attempt === maxAttempts) {
       throw new Error(
-        `Gmail ${path} failed (${response.status}${reason ? ` ${reason}` : ''}): ${JSON.stringify(body)}`,
+        `Gmail ${path} failed (${response.status}${reason ? ` ${reason}` : ''}): ${JSON.stringify(errorBody)}`,
       );
     }
 
@@ -130,9 +148,7 @@ export async function* listMessageIds(query: string): AsyncGenerator<string[]> {
       messages?: Array<{ id: string }>;
       nextPageToken?: string;
     }>('/messages', {
-      q: query,
-      maxResults: '500',
-      ...(pageToken !== undefined ? { pageToken } : {}),
+      params: { q: query, maxResults: '500', ...(pageToken !== undefined ? { pageToken } : {}) },
     });
     yield (page.messages ?? []).map((m) => m.id);
     pageToken = page.nextPageToken;
@@ -141,8 +157,7 @@ export async function* listMessageIds(query: string): AsyncGenerator<string[]> {
 
 export async function getMessageMetadata(id: string): Promise<GmailMessage> {
   return gmailFetch<GmailMessage>(`/messages/${id}`, {
-    format: 'metadata',
-    metadataHeaders: [...METADATA_HEADERS],
+    params: { format: 'metadata', metadataHeaders: [...METADATA_HEADERS] },
   });
 }
 
