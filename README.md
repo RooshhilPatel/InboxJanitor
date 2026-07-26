@@ -28,19 +28,16 @@ deterministic rules, and once approved a free Gmail filter handles them forever.
 
 ## Setup
 
+Gmail access needs its own Google Cloud project — full walkthrough in
+[docs/oauth-setup.md](docs/oauth-setup.md). Short version: new GCP project, enable the Gmail API,
+consent screen set to External and **published** (Testing-mode refresh tokens expire after 7 days),
+scopes `gmail.readonly` + `gmail.settings.basic`, then a **Desktop app** OAuth client.
+
 ```sh
 npm install
 cp .env.example .env      # fill in GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET
 npm run auth              # opens consent, writes GMAIL_REFRESH_TOKEN
 ```
-
-Google Cloud console, one time:
-
-1. Confirm **OAuth consent screen → Publishing status** is not *Testing* — refresh tokens expire
-   after 7 days there, which would silently break this and the newsletter sync.
-2. Create a **Desktop app** OAuth client named `InboxJanitor`, separate from the
-   MegaNewsletterDashboard client, so the Gmail grant can be revoked independently.
-3. Scopes: `gmail.readonly` and `gmail.settings.basic`. `gmail.modify` is added only at Phase 3.
 
 ## Use
 
