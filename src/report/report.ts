@@ -8,8 +8,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { openDb } from '../scan/db.ts';
-import { classify, readRate, type SenderStats, type Tier, type Verdict } from './classify.ts';
-import { CATEGORIES, categorize, type Category } from '../rules/categories.ts';
+import { classify, labelFor, readRate, type SenderStats, type Tier, type Verdict } from './classify.ts';
+import { CATEGORIES, type Category } from '../rules/categories.ts';
 
 const OUT_DIR = fileURLToPath(new URL('../../out/', import.meta.url));
 const DAY = 86_400_000;
@@ -51,6 +51,12 @@ const TIER_ORDER: Tier[] = [
 
 /** Inbox messages older than this are archived regardless of sender. Nothing is deleted. */
 const ARCHIVE_AFTER_DAYS = 180;
+
+/**
+ * What happens to senders the heuristics could not decide. Set to archive at review: they are out
+ * of the inbox but fully kept, so an undecided sender costs inbox space rather than data.
+ */
+const REVIEW_DEFAULT = 'archive';
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
@@ -121,7 +127,7 @@ function categoryRows(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>
   let uncategorized = { senders: 0, inbox: 0 };
 
   for (const sender of senders) {
-    const category = categorize(sender.email, sender.domain);
+    const category = labelFor(sender);
     if (category === null) {
       uncategorized = { senders: uncategorized.senders + 1, inbox: uncategorized.inbox + sender.inInbox };
       continue;
@@ -164,7 +170,7 @@ function renderHtml(senders: ReadonlyArray<SenderStats & { verdict: Verdict }>):
     const rows = group
       .map((s) => {
         const subjects = s.sampleSubjects.map((x) => `<li>${escapeHtml(x)}</li>`).join('');
-        const category = categorize(s.email, s.domain);
+        const category = labelFor(s);
         const label = category === null ? '<span class="muted">—</span>' : escapeHtml(CATEGORIES[category].label);
         return `<tr>
           <td><strong>${escapeHtml(s.displayName ?? s.email)}</strong><br><code>${escapeHtml(s.email)}</code></td>
@@ -236,6 +242,9 @@ archive_after_days: ${ARCHIVE_AFTER_DAYS}
 
 # Never applies to a starred message, at any tier. Stars are respected per message, not per sender.
 protect_starred: true
+
+# Senders the heuristics could not decide: archived, not deleted. Reviewed 2026-07-26.
+review_default: ${REVIEW_DEFAULT}
 
 # Machine-managed labels. Only these two namespaces are ever created, renamed, or deleted -- your
 # hand-made labels (Receipts, Land, Boat, 2024 Taxes, ...) are structurally out of reach.

@@ -3,7 +3,8 @@
  * inputs always produce the same tier and any surprising result can be traced to a named signal.
  */
 
-import { categorize } from '../rules/categories.ts';
+import { categorize, type Category } from '../rules/categories.ts';
+import { findOverride } from '../rules/overrides.ts';
 
 export type Tier =
   | 'E_NEVER_TOUCH'
@@ -89,6 +90,24 @@ function matchesAny(subjects: readonly string[], pattern: RegExp): boolean {
   return subjects.some((subject) => pattern.test(subject));
 }
 
+/**
+ * The label a sender's mail should carry, or null for none. Single source of truth so the report,
+ * the compiler, and the backlog sweep cannot disagree about where a message files.
+ *
+ * A reviewed override wins outright. Otherwise a human correspondent is never filed under an
+ * automated category — colleagues mail from google.com too, and "Filed/Accounts" on a message from
+ * a coworker is both wrong and quietly insulting.
+ */
+export function labelFor(sender: SenderStats): Category | null {
+  const override = findOverride(sender.email, sender.domain);
+  if (override !== null && override.category !== undefined) return override.category;
+  // Mail on its way to Trash is never filed. A "Filed/Shopping" tag beside a sender you decided to
+  // delete is noise in the report and a label the compiler would create for nothing.
+  if (override?.action === 'trash') return null;
+  if (sender.contacted) return null;
+  return categorize(sender.email, sender.domain);
+}
+
 export function readRate(sender: SenderStats): number {
   if (sender.total === 0) return 0;
   return (sender.total - sender.unread) / sender.total;
@@ -97,6 +116,16 @@ export function readRate(sender: SenderStats): number {
 export function classify(sender: SenderStats): Verdict {
   const reasons: string[] = [];
   const rate = readRate(sender);
+
+  // --- Reviewed decisions win outright, including over the safety allowlist. Someone who has
+  // looked at a sender knows more than any signal we can compute from headers. ---
+  const override = findOverride(sender.email, sender.domain);
+  if (override?.action !== undefined) {
+    const why = override.note ?? 'reviewed decision';
+    if (override.action === 'trash') return { tier: 'B_UNSUBSCRIBE', reasons: [`reviewed: trash — ${why}`] };
+    if (override.action === 'archive') return { tier: 'C_ARCHIVE', reasons: [`reviewed: archive — ${why}`] };
+    return { tier: 'E_NEVER_TOUCH', reasons: [`reviewed: keep — ${why}`] };
+  }
 
   // --- Tier E: allowlist, evaluated before anything else can propose a deletion. ---
   if (sender.contacted) reasons.push('you have emailed this address');
@@ -113,7 +142,7 @@ export function classify(sender: SenderStats): Verdict {
   // Bulk headers are not a counter-signal here: Amazon order confirmations, Airbnb reservations and
   // bank statements all ship List-Unsubscribe. Gating this on `!bulk` sent 95 Amazon order
   // confirmations to the review pile while identical Airbnb mail filed correctly.
-  const filedCategory = categorize(sender.email, sender.domain);
+  const filedCategory = labelFor(sender);
   if (matchesAny(sender.sampleSubjects, TRANSACTIONAL_SUBJECT)) {
     return {
       tier: 'C_ARCHIVE',
