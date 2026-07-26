@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "apply:labels": "tsx src/apply/labels.ts",
     "apply:filters": "tsx src/apply/filters.ts",
-    "apply:sweep": "tsx src/apply/sweep.ts"
+    "apply:sweep": "tsx src/apply/sweep.ts",
+    "unsubscribe": "tsx src/report/unsubscribe.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
