@@ -1,0 +1,25 @@
+{
+  "name": "inbox-janitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic Gmail triage: cold scan, rule ledger, filter compiler.",
+  "scripts": {
+    "auth": "tsx src/auth/bootstrap.ts",
+    "scan": "tsx src/scan/scan.ts",
+    "report": "tsx src/report/report.ts",
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "dotenv": "^16.4.7",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.14",
+    "tsx": "^4.22.5",
+    "typescript": "^5.8.2"
+  }
+}
