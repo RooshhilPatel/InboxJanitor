@@ -36,9 +36,20 @@ const TIER_LABEL: Record<Tier, string> = {
   B_UNSUBSCRIBE: 'Unsubscribe, then trash',
   C_ARCHIVE: 'Archive, not delete',
   D_REVIEW: 'Needs your call',
+  L_LOW_VOLUME: 'Long tail — ignore',
 };
 
-const TIER_ORDER: Tier[] = ['A_AUTO_TRASH', 'B_UNSUBSCRIBE', 'C_ARCHIVE', 'D_REVIEW', 'E_NEVER_TOUCH'];
+const TIER_ORDER: Tier[] = [
+  'A_AUTO_TRASH',
+  'B_UNSUBSCRIBE',
+  'C_ARCHIVE',
+  'D_REVIEW',
+  'E_NEVER_TOUCH',
+  'L_LOW_VOLUME',
+];
+
+/** Inbox messages older than this are archived regardless of sender. Nothing is deleted. */
+const ARCHIVE_AFTER_DAYS = 180;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
@@ -181,6 +192,14 @@ function renderRulesDraft(senders: ReadonlyArray<SenderStats & { verdict: Verdic
 version: 1
 mode: quarantine
 
+# Inbox messages older than this are archived regardless of sender: out of the inbox, still
+# searchable, nothing deleted. Starred messages are always exempt. This is the single biggest lever
+# on the inbox count -- sender rules alone leave roughly 2,400 messages in place.
+archive_after_days: ${ARCHIVE_AFTER_DAYS}
+
+# Never applies to a starred message, at any tier. Stars are respected per message, not per sender.
+protect_starred: true
+
 # Evaluated before every other rule. Nothing here is ever filtered.
 never_touch:
 ${list('E_NEVER_TOUCH')}
@@ -195,7 +214,10 @@ unsubscribe_then_trash:
 ${list('B_UNSUBSCRIBE')}
 # Not decidable from metadata alone. Left for the Part 2 janitor or a manual call.
 review:
-${list('D_REVIEW')}`;
+${list('D_REVIEW')}
+# Fewer than 3 messages ever. No rule is worth writing; listed only for completeness.
+low_volume:
+${list('L_LOW_VOLUME')}`;
 }
 
 function main(): void {

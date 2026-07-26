@@ -31,13 +31,27 @@ test('bulk mail you never open is filterable', () => {
 test('allowlist signals override deletion evidence', () => {
   for (const override of [
     { contacted: true },
-    { starred: 2 },
     { email: 'alerts@chase.com', domain: 'chase.com' },
     { email: 'no-reply@irs.gov', domain: 'irs.gov' },
     { sampleSubjects: ['Your verification code'] },
   ]) {
     equal(classify({ ...bulkUnread, ...override }).tier, 'E_NEVER_TOUCH', JSON.stringify(override));
   }
+});
+
+// One star out of forty means "I saved one thing", not "never filter this sender". Treating it as
+// the latter shielded 49 senders and 414 inbox messages behind a single star.
+test('stars protect a sender only as a pattern, not as a single instance', () => {
+  equal(classify({ ...bulkUnread, starred: 1 }).tier, 'B_UNSUBSCRIBE', 'one star out of 40');
+  equal(classify({ ...bulkUnread, starred: 3 }).tier, 'E_NEVER_TOUCH', 'three stars is a habit');
+  equal(classify({ ...bulkUnread, total: 10, unread: 10, starred: 2 }).tier, 'E_NEVER_TOUCH', '20% starred');
+});
+
+// 265 of 325 review-tier senders had fewer than 3 messages — a long tail that buried the ~60
+// senders actually worth a decision.
+test('long-tail senders are separated from the real review set', () => {
+  equal(classify({ ...bulkUnread, total: 2, unread: 2 }).tier, 'L_LOW_VOLUME');
+  equal(classify({ ...bulkUnread, bulk: false, total: 1, unread: 1 }).tier, 'L_LOW_VOLUME');
 });
 
 // A delete filter here would silently break the daily digest with no error surfaced anywhere.
@@ -53,7 +67,7 @@ test('transactional mail is archived, never deleted', () => {
 
 test('weak evidence defers instead of guessing', () => {
   equal(classify({ ...bulkUnread, unread: 4 }).tier, 'D_REVIEW', 'bulk but actually read');
-  equal(classify({ ...bulkUnread, total: 2, unread: 2 }).tier, 'D_REVIEW', 'too few messages');
+  equal(classify({ ...bulkUnread, bulk: false, total: 8, unread: 8 }).tier, 'D_REVIEW', 'no bulk signal');
 });
 
 test('address headers parse', () => {

@@ -3,7 +3,30 @@
  * inputs always produce the same tier and any surprising result can be traced to a named signal.
  */
 
-export type Tier = 'E_NEVER_TOUCH' | 'A_AUTO_TRASH' | 'B_UNSUBSCRIBE' | 'C_ARCHIVE' | 'D_REVIEW';
+export type Tier =
+  | 'E_NEVER_TOUCH'
+  | 'A_AUTO_TRASH'
+  | 'B_UNSUBSCRIBE'
+  | 'C_ARCHIVE'
+  | 'D_REVIEW'
+  | 'L_LOW_VOLUME';
+
+/** Below this, a sender cannot move the inbox number either way and is not worth your attention. */
+export const MIN_VOLUME = 3;
+
+/**
+ * Stars protect a sender only when they show a real pattern. One star out of thirty says "I saved
+ * one thing from this newsletter", not "never filter this sender" — and treating it as the latter
+ * shielded 49 senders and 414 inbox messages behind a single star. Individual starred messages are
+ * still protected downstream at message level (`-is:starred`), which is where that rule belongs.
+ */
+const STAR_PROTECT_COUNT = 3;
+const STAR_PROTECT_RATIO = 0.2;
+
+function starPatternProtects(sender: SenderStats): boolean {
+  if (sender.starred === 0) return false;
+  return sender.starred >= STAR_PROTECT_COUNT || sender.starred / sender.total >= STAR_PROTECT_RATIO;
+}
 
 export interface SenderStats {
   email: string;
@@ -75,7 +98,9 @@ export function classify(sender: SenderStats): Verdict {
 
   // --- Tier E: allowlist, evaluated before anything else can propose a deletion. ---
   if (sender.contacted) reasons.push('you have emailed this address');
-  if (sender.starred > 0) reasons.push(`${sender.starred} starred`);
+  if (starPatternProtects(sender)) {
+    reasons.push(`${sender.starred} of ${sender.total} starred`);
+  }
   if (isCritical(sender)) reasons.push('financial/government/medical/legal sender');
   if (matchesAny(sender.sampleSubjects, SECURITY_SUBJECT)) reasons.push('security or verification mail');
   if (MEGA_NEWSLETTER_PROTECTED.includes(sender.email)) reasons.push('mega-newsletter core source');
@@ -91,16 +116,21 @@ export function classify(sender: SenderStats): Verdict {
   }
 
   // --- Tiers A/B: bulk mail you demonstrably do not read. ---
-  if (sender.bulk && sender.total >= 3 && rate < 0.1) {
+  if (sender.bulk && sender.total >= MIN_VOLUME && rate < 0.1) {
     const evidence = [
       `${sender.total} messages`,
       `${Math.round(rate * 100)}% read`,
       'never replied',
-      'never starred',
+      sender.starred === 0 ? 'never starred' : `only ${sender.starred} starred`,
     ];
     return sender.hasUnsubLink
       ? { tier: 'B_UNSUBSCRIBE', reasons: [...evidence, 'has a working unsubscribe'] }
       : { tier: 'A_AUTO_TRASH', reasons: [...evidence, 'no usable unsubscribe link'] };
+  }
+
+  // --- Long tail. Separated so it cannot crowd out the senders actually worth a decision. ---
+  if (sender.total < MIN_VOLUME) {
+    return { tier: 'L_LOW_VOLUME', reasons: [`only ${sender.total} message(s) ever — not worth a rule`] };
   }
 
   const why =
