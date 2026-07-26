@@ -110,6 +110,21 @@ export function recordContacted(
   })();
 }
 
+/**
+ * Message ids already stored. A scan can die partway through — rate limits, a dropped connection —
+ * and refetching thousands of messages to rediscover what is already on disk wastes the very quota
+ * that killed the previous run.
+ */
+export function existingMessageIds(db: Database.Database): Set<string> {
+  const rows = db.prepare('SELECT id FROM messages').all() as Array<{ id: string }>;
+  return new Set(rows.map((row) => row.id));
+}
+
+/** Addresses already recorded as contacted, so pass 1 can be skipped on a resumed run. */
+export function contactedCount(db: Database.Database): number {
+  return (db.prepare('SELECT COUNT(*) AS n FROM contacted').get() as { n: number }).n;
+}
+
 export function setMeta(db: Database.Database, key: string, value: string): void {
   db.prepare('INSERT INTO scan_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, value);

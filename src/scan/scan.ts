@@ -12,7 +12,15 @@ import {
   mapWithConcurrency,
   type GmailMessage,
 } from './gmail.ts';
-import { openDb, recordContacted, setMeta, upsertMessages, type MessageRow } from './db.ts';
+import {
+  contactedCount,
+  existingMessageIds,
+  openDb,
+  recordContacted,
+  setMeta,
+  upsertMessages,
+  type MessageRow,
+} from './db.ts';
 import { parseAddress, parseAddressList } from './headers.ts';
 
 const CATEGORY_LABELS = ['CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_SOCIAL', 'CATEGORY_FORUMS'];
@@ -77,33 +85,38 @@ async function main(): Promise<void> {
 
   // Pass 1 — who have I written to? This is what protects real correspondents from every
   // downstream rule, so it runs first and is never derived from the inbox itself.
-  console.log('Pass 1: sent mail (building the contacted allowlist)');
-  const sentIds = await collectIds('in:sent');
-  console.log(`  ${sentIds.length} sent messages`);
+  // Skipped on resume: the allowlist is complete or it is not, and a partial one is never written.
+  if (contactedCount(db) > 0) {
+    console.log(`Pass 1: skipped — ${contactedCount(db)} contacted addresses already recorded\n`);
+  } else {
+    console.log('Pass 1: sent mail (building the contacted allowlist)');
+    const sentIds = await collectIds('in:sent');
+    console.log(`  ${sentIds.length} sent messages`);
 
-  const contacted = new Map<string, { count: number; lastSent: number }>();
-  await mapWithConcurrency(
-    sentIds,
-    concurrency,
-    async (id) => {
-      const message = await getMessageMetadata(id);
-      const sentAt = Number(message.internalDate ?? '0');
-      const recipients = [
-        ...parseAddressList(header(message, 'To')),
-        ...parseAddressList(header(message, 'Cc')),
-      ];
-      for (const email of new Set(recipients)) {
-        const existing = contacted.get(email);
-        contacted.set(email, {
-          count: (existing?.count ?? 0) + 1,
-          lastSent: Math.max(existing?.lastSent ?? 0, sentAt),
-        });
-      }
-    },
-    progressBar('fetched'),
-  );
-  recordContacted(db, contacted);
-  console.log(`  ${contacted.size} distinct addresses contacted\n`);
+    const contacted = new Map<string, { count: number; lastSent: number }>();
+    await mapWithConcurrency(
+      sentIds,
+      concurrency,
+      async (id) => {
+        const message = await getMessageMetadata(id);
+        const sentAt = Number(message.internalDate ?? '0');
+        const recipients = [
+          ...parseAddressList(header(message, 'To')),
+          ...parseAddressList(header(message, 'Cc')),
+        ];
+        for (const email of new Set(recipients)) {
+          const existing = contacted.get(email);
+          contacted.set(email, {
+            count: (existing?.count ?? 0) + 1,
+            lastSent: Math.max(existing?.lastSent ?? 0, sentAt),
+          });
+        }
+      },
+      progressBar('fetched'),
+    );
+    recordContacted(db, contacted);
+    console.log(`  ${contacted.size} distinct addresses contacted\n`);
+  }
 
   // Pass 2 — the corpus to classify. The whole current inbox regardless of age, plus recent
   // history so per-sender engagement rates are computed over more than just what is still unread.
@@ -120,21 +133,34 @@ async function main(): Promise<void> {
     found.forEach((id) => ids.add(id));
   }
 
-  const unique = [...ids];
+  const alreadyStored = existingMessageIds(db);
+  const unique = [...ids].filter((id) => !alreadyStored.has(id));
+  if (alreadyStored.size > 0) {
+    console.log(`  ${alreadyStored.size} already stored from a previous run — skipping those`);
+  }
   console.log(`  ${unique.length} unique messages to fetch`);
 
+  // Flushed in small batches so an interrupted run leaves at most a handful of messages unsaved,
+  // and the next run resumes from disk instead of re-spending quota.
   const buffer: MessageRow[] = [];
-  await mapWithConcurrency(
-    unique,
-    concurrency,
-    async (id) => {
-      const row = toRow(await getMessageMetadata(id));
-      if (row !== null) buffer.push(row);
-      if (buffer.length >= 500) upsertMessages(db, buffer.splice(0, buffer.length));
-    },
-    progressBar('fetched'),
-  );
-  if (buffer.length > 0) upsertMessages(db, buffer);
+  const flush = (): void => {
+    if (buffer.length > 0) upsertMessages(db, buffer.splice(0, buffer.length));
+  };
+
+  try {
+    await mapWithConcurrency(
+      unique,
+      concurrency,
+      async (id) => {
+        const row = toRow(await getMessageMetadata(id));
+        if (row !== null) buffer.push(row);
+        if (buffer.length >= 100) flush();
+      },
+      progressBar('fetched'),
+    );
+  } finally {
+    flush();
+  }
 
   setMeta(db, 'last_scan_at', new Date().toISOString());
   setMeta(db, 'scan_window', window);

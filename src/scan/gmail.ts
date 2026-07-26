@@ -30,9 +30,62 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Gmail rate-limits per-user at 250 quota units/second and answers overruns with 429 or a 403
- * carrying rateLimitExceeded. Both are transient, so they get exponential backoff with jitter;
- * a 403 for any other reason (usually insufficient scope) is a real failure and throws immediately.
+ * Gmail enforces two per-user quotas at once: 250 units/second and 15,000 units/minute. Reacting to
+ * 403s is not enough — once the minute bucket is spent, every in-flight worker fails for up to a
+ * full minute, which is far longer than any sane per-request backoff. So we pace proactively.
+ *
+ * Sustaining `unitsPerSecond` with a one-second burst ceiling satisfies the per-second limit
+ * directly, and 60x it stays under the per-minute limit with headroom. `penalize()` exists because
+ * a rate-limit response means *every* worker is over budget, not just the one that got the 403 —
+ * the cooldown has to be global or the other workers keep the bucket pinned at empty.
+ */
+export class QuotaBucket {
+  private tokens: number;
+  private lastRefill = Date.now();
+  private cooldownUntil = 0;
+
+  constructor(private readonly unitsPerSecond: number) {
+    this.tokens = unitsPerSecond;
+  }
+
+  async take(cost: number): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      if (now < this.cooldownUntil) {
+        await sleep(this.cooldownUntil - now);
+        continue;
+      }
+
+      this.tokens = Math.min(
+        this.unitsPerSecond,
+        this.tokens + ((now - this.lastRefill) / 1000) * this.unitsPerSecond,
+      );
+      this.lastRefill = now;
+
+      if (this.tokens >= cost) {
+        this.tokens -= cost;
+        return;
+      }
+      await sleep(Math.ceil(((cost - this.tokens) / this.unitsPerSecond) * 1000));
+    }
+  }
+
+  /** Stops every worker for `ms` and empties the bucket, so the quota window can actually drain. */
+  penalize(ms: number): void {
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + ms);
+    this.tokens = 0;
+  }
+}
+
+// 200 units/sec sustained = 40 metadata fetches/sec, and 12,000 units/min against a 15,000 ceiling.
+const bucket = new QuotaBucket(Number(process.env.SCAN_UNITS_PER_SEC ?? '200'));
+
+/** Quota cost per call. Uniform 5 covers messages.list and messages.get; profile is cheaper. */
+const UNIT_COST = 5;
+
+/**
+ * A 403 carrying rateLimitExceeded and a 429 are both transient. Any other 403 — almost always
+ * insufficient scope — is a real failure and throws immediately rather than retrying pointlessly.
  */
 async function gmailFetch<T>(path: string, params: Record<string, string | string[]> = {}): Promise<T> {
   const url = new URL(`${BASE}${path}`);
@@ -41,8 +94,9 @@ async function gmailFetch<T>(path: string, params: Record<string, string | strin
     else url.searchParams.set(key, value);
   }
 
-  const maxAttempts = 5;
+  const maxAttempts = 8;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await bucket.take(UNIT_COST);
     const token = await getAccessToken();
     const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
     if (response.ok) return (await response.json()) as T;
@@ -50,16 +104,20 @@ async function gmailFetch<T>(path: string, params: Record<string, string | strin
     const body: unknown = await response.json().catch(() => ({}));
     const reason =
       (body as { error?: { errors?: Array<{ reason?: string }> } }).error?.errors?.[0]?.reason ?? '';
-    const transient =
-      RETRYABLE.has(response.status) &&
-      (response.status !== 403 || reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded');
+    const rateLimited =
+      response.status === 429 || reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded';
+    const transient = rateLimited || (RETRYABLE.has(response.status) && response.status !== 403);
 
     if (!transient || attempt === maxAttempts) {
       throw new Error(
         `Gmail ${path} failed (${response.status}${reason ? ` ${reason}` : ''}): ${JSON.stringify(body)}`,
       );
     }
-    await sleep(2 ** attempt * 250 + Math.random() * 250);
+
+    // Backoff has to be able to outlast the minute-long quota window, not just a momentary spike.
+    const backoff = Math.min(75_000, 2 ** attempt * 1000) + Math.random() * 1000;
+    if (rateLimited) bucket.penalize(backoff);
+    else await sleep(backoff);
   }
   throw new Error('unreachable');
 }
