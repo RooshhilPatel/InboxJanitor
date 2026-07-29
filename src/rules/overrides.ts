@@ -61,6 +61,26 @@ export const OVERRIDES: Override[] = [
   },
 
   // ---------------------------------------------------------------------------------------------
+  // Already handled by a hand-made Gmail filter, under a label outside the managed namespace.
+  //
+  // These read as textbook noise to the heuristics — high volume, bulk headers, 0% read — but the
+  // read rate is an artifact: the mail never lands in the inbox to be read, because a filter the
+  // account owner wrote years ago labels and archives it on arrival. Trashing a sender on evidence
+  // its own correct handling produced is the failure mode this entry exists to block.
+  //
+  // `archive` + `category: null` is deliberate, not lazy. It resolves to file-with-no-label, which
+  // the compiler leaves unfiltered by design, so this project creates nothing that could race the
+  // owner's filter — and it cannot reach the label either way, since only Filed/ and Janitor/ are
+  // writable. Staying out of the way *is* the correct behaviour here.
+  // ---------------------------------------------------------------------------------------------
+  {
+    emails: ['scotts-flights-friends-subscribed@googlegroups.com'],
+    action: 'archive',
+    category: null,
+    note: "the owner's own filter already files this under \"Scott's Cheap Flights\"",
+  },
+
+  // ---------------------------------------------------------------------------------------------
   // Explicit trash. Reviewed and unwanted.
   // ---------------------------------------------------------------------------------------------
   {

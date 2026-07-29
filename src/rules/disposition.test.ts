@@ -94,6 +94,15 @@ test('explicitly pinned senders never age out', () => {
   equal(d.action, 'inbox');
 });
 
+// 227 messages, 0% read, bulk, unsubscribable — the exact shape of noise, except a hand-made filter
+// had been labelling and archiving every one of them on arrival. The read rate was a product of the
+// mail being handled correctly, and the heuristics proposed Trash on the strength of it.
+test('a sender a hand-made filter already files is archived, never trashed or relabelled', () => {
+  const going = sender('scotts-flights-friends-subscribed@googlegroups.com', { total: 227, unread: 227, inInbox: 0 });
+  const d = dispositionFor(going, message({ subject: '🥝 Eastern US to New Zealand — $965 (Oct-Feb)' }), CONFIG);
+  deepEqual({ action: d.action, label: d.label }, { action: 'file', label: null });
+});
+
 test('newsletters stay in the inbox for mega-newsletter to digest', () => {
   const d = dispositionFor(sender('dan@tldrnewsletter.com'), message({ subject: 'TLDR daily' }), CONFIG);
   deepEqual({ action: d.action, label: d.label }, { action: 'inbox', label: 'newsletters' });
