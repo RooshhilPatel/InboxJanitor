@@ -58,14 +58,26 @@ export interface Verdict {
  * Senders that must never be filtered regardless of engagement. Matched against the full address
  * and the domain. Deliberately broad: a false "keep" costs one email, a false "delete" can cost a
  * password reset, a fraud alert, or a tax document.
+ *
+ * Most terms match as plain substrings, not whole words. `\b` only fires between a word and a
+ * non-word character, and brand hostnames concatenate without punctuation — so `\bhealth\b` cannot
+ * see `benefits.unitedhealthcare.com` and `\bbank\b` cannot see `bankofbaroda.com`. Those are the
+ * exact senders these patterns exist for, and the boundary was skipping them: 29 of 677 scanned
+ * senders, including nine addresses at the account owner's bank.
+ *
+ * The last entry stays bounded because those terms do collide as substrings — `chase` inside
+ * `purchase`, `citi` inside `electricity`, `stripe` inside `pinstripe`, `court` inside `courtesy`.
+ * Protecting a shop because its address says "purchase" would quietly disable the janitor for it.
  */
 const CRITICAL_PATTERNS = [
   /(^|\.)(irs|ssa|usps|uscis)\.gov$/i,
   /\.gov$/i,
-  /\b(bank|chase|wellsfargo|citi|amex|americanexpress|capitalone|schwab|fidelity|vanguard)\b/i,
-  /\b(paypal|venmo|stripe|coinbase|kraken|gemini)\b/i,
-  /\b(insurance|healthcare|health|medical|clinic|hospital|pharmacy|dental)\b/i,
-  /\b(legal|attorney|lawfirm|court)\b/i,
+  /bank|wellsfargo|amex|americanexpress|capitalone|schwab|fidelity|vanguard/i,
+  /paypal|venmo|coinbase|kraken/i,
+  // `hospital` unbounded would swallow every `hospitality` domain the travel rules should file.
+  /insurance|health|medical|clinic|pharmacy|dental|hospital(?!ity)/i,
+  /attorney|lawfirm/i,
+  /\b(chase|citi|stripe|gemini|legal|court)\b/i,
 ];
 
 const SECURITY_SUBJECT = /\b(security alert|verification code|verify your|password reset|2fa|two-factor|sign-in|suspicious activity|confirm your identity)\b/i;

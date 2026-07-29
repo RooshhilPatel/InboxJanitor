@@ -39,6 +39,36 @@ test('allowlist signals override deletion evidence', () => {
   }
 });
 
+// Brand hostnames glue words together, and \b only fires against a non-word character — so the
+// bounded patterns skipped the account owner's own bank and health insurer while matching the
+// tidily-punctuated examples that made them look correct.
+test('critical senders are matched inside glued hostnames', () => {
+  for (const [email, domain] of [
+    ['uhc@benefits.unitedhealthcare.com', 'benefits.unitedhealthcare.com'],
+    ['estatement@bankofbaroda.com', 'bankofbaroda.com'],
+    ['mail@em.citizensbank.com', 'em.citizensbank.com'],
+    ['statements@mail.synchronybank.com', 'mail.synchronybank.com'],
+    ['dental_plus1.sr@e.smilereminder.com', 'e.smilereminder.com'],
+    ['no-reply@solvhealth.com', 'solvhealth.com'],
+  ] as const) {
+    equal(classify({ ...bulkUnread, email, domain }).tier, 'E_NEVER_TOUCH', email);
+  }
+});
+
+// The other half of the same rule: loosening the boundary must not protect ordinary senders that
+// merely contain these letters. `purchase` is the one that would hurt most — it is on every receipt.
+test('glued matching does not protect senders that merely contain the letters', () => {
+  for (const [email, domain] of [
+    ['purchases@shop.example', 'shop.example'],
+    ['no-reply@electricity.example', 'electricity.example'],
+    ['courtesy@shop.example', 'shop.example'],
+    ['deals@pinstripe.example', 'pinstripe.example'],
+    ['stay@hospitality.hilton.example', 'hospitality.hilton.example'],
+  ] as const) {
+    equal(classify({ ...bulkUnread, email, domain }).tier, 'B_UNSUBSCRIBE', email);
+  }
+});
+
 // One star out of forty means "I saved one thing", not "never filter this sender". Treating it as
 // the latter shielded 49 senders and 414 inbox messages behind a single star.
 test('stars protect a sender only as a pattern, not as a single instance', () => {
