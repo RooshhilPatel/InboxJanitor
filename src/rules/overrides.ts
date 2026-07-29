@@ -11,6 +11,8 @@
  *   keep    — never touched, stays in the inbox
  * `category`: forces a label. `null` forces *no* label, for senders a domain rule mislabels.
  */
+import { readFileSync } from 'node:fs';
+import { z } from 'zod';
 import type { Category } from './categories.ts';
 
 export interface Override {
@@ -23,24 +25,74 @@ export interface Override {
   note?: string;
 }
 
+const CATEGORIES = [
+  'shopping', 'travel', 'dining', 'money', 'home', 'health', 'accounts', 'social', 'newsletters',
+] as const;
+
+const OverrideSchema = z.object({
+  emails: z.array(z.string()).optional(),
+  domains: z.array(z.string()).optional(),
+  action: z.enum(['trash', 'archive', 'keep']).optional(),
+  category: z.enum(CATEGORIES).nullable().optional(),
+  trashIfUnreadAfterDays: z.number().optional(),
+  note: z.string().optional(),
+});
+
+/**
+ * Personal entries — colleagues, family, private relay aliases — live outside the repo so the rule
+ * ledger can be published without publishing the people in it. Resolved against the repo root
+ * rather than the working directory, so it does not matter where a script is run from.
+ */
+const PRIVATE_PATH = new URL('../../data/private-overrides.json', import.meta.url);
+
+/**
+ * A missing file is the normal case for anyone who is not the account owner, so it returns an empty
+ * list rather than throwing. Malformed content is different: silently dropping an entry that says
+ * "never file this person" would be the exact failure the entry exists to prevent, so it throws.
+ */
+/**
+ * `category: null` and an absent `category` mean different things — force no label versus express no
+ * opinion — so keys are copied only when present rather than spread wholesale. Under
+ * exactOptionalPropertyTypes an explicit `undefined` is not the same as an absent key either.
+ */
+function toOverride(entry: z.infer<typeof OverrideSchema>): Override {
+  const out: Override = {};
+  if (entry.emails !== undefined) out.emails = entry.emails;
+  if (entry.domains !== undefined) out.domains = entry.domains;
+  if (entry.action !== undefined) out.action = entry.action;
+  if (entry.category !== undefined) out.category = entry.category;
+  if (entry.trashIfUnreadAfterDays !== undefined) out.trashIfUnreadAfterDays = entry.trashIfUnreadAfterDays;
+  if (entry.note !== undefined) out.note = entry.note;
+  return out;
+}
+
+export function parsePrivateOverrides(raw: string): Override[] {
+  const parsed = z.array(OverrideSchema).safeParse(JSON.parse(raw) as unknown);
+  if (!parsed.success) {
+    throw new Error(
+      `private overrides are malformed, and these entries outrank every other rule — ` +
+        `refusing to run with them silently dropped: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data.map(toOverride);
+}
+
+function loadPrivateOverrides(): Override[] {
+  try {
+    return parsePrivateOverrides(readFileSync(PRIVATE_PATH, 'utf8'));
+  } catch (error) {
+    // Absent is the normal case for anyone who is not the account owner. Malformed is not.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * Private entries come first because the People block must outrank everything: a domain rule below
+ * would otherwise label a colleague's mail as an automated account notice.
+ */
 export const OVERRIDES: Override[] = [
-  // ---------------------------------------------------------------------------------------------
-  // People. Highest precedence: nothing below may relabel or file a human correspondent.
-  // ---------------------------------------------------------------------------------------------
-  {
-    emails: [
-      'redacted-person-1@example.com',
-      'redacted-person-2@example.com',
-      'redacted-person-3@example.com',
-      'redacted-person-4@example.com',
-      'redacted-person-5@example.com',
-      'redacted-person-6@example.com',
-      'redacted-person-7@example.com',
-    ],
-    action: 'keep',
-    category: null,
-    note: 'real people — never filed, never labelled as an automated account',
-  },
+  ...loadPrivateOverrides(),
 
   // ---------------------------------------------------------------------------------------------
   // Newsletters. Labelled but left in the inbox: mega-newsletter digests and trashes them daily.
@@ -165,18 +217,9 @@ export const OVERRIDES: Override[] = [
   },
   {
     emails: [
-      'redacted-relay-1@example.com',
+      // The private relay aliases for these merchants live in data/private-overrides.json.
       'hi@thebutterflyeffect.com',
       'support@thebutterflyeffect.zendesk.com',
-      'redacted-relay-2@example.com',
-      'redacted-relay-3@example.com',
-      'redacted-relay-4@example.com',
-      'redacted-relay-5@example.com',
-      'redacted-relay-6@example.com',
-      'redacted-relay-7@example.com',
-      'redacted-relay-8@example.com',
-      'redacted-relay-9@example.com',
-      'redacted-relay-10@example.com',
       'onlineorders@centralcomputer.com',
       'ord-status@bhphotovideo.com',
       'support@aersf.com',
@@ -221,10 +264,19 @@ function domainMatches(senderDomain: string, ruleDomain: string): boolean {
 
 /** The first override claiming this sender, or null. */
 export function findOverride(email: string, domain: string): OverrideMatch | null {
+  return findOverrideIn(OVERRIDES, email, domain);
+}
+
+/** Same, against an explicit ledger. Separated so precedence is testable without private data. */
+export function findOverrideIn(
+  overrides: readonly Override[],
+  email: string,
+  domain: string,
+): OverrideMatch | null {
   const address = email.toLowerCase();
   const host = domain.toLowerCase();
 
-  for (const rule of OVERRIDES) {
+  for (const rule of overrides) {
     const byEmail = rule.emails?.some((candidate) => candidate.toLowerCase() === address) === true;
     const byDomain = rule.domains?.some((candidate) => domainMatches(host, candidate)) === true;
     if (!byEmail && !byDomain) continue;

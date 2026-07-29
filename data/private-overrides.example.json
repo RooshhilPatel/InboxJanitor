@@ -1,0 +1,14 @@
+[
+  {
+    "emails": ["a.colleague@example.com", "a.relative@example.net"],
+    "action": "keep",
+    "category": null,
+    "note": "real people — never filed, never labelled as an automated account"
+  },
+  {
+    "emails": ["relay_alias_9f3c@icloud.com"],
+    "action": "archive",
+    "category": "shopping",
+    "note": "private relay aliases — live inbound addresses, never publish"
+  }
+]

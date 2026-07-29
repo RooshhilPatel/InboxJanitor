@@ -1,7 +1,9 @@
 import { equal } from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { classify, labelFor, type SenderStats } from '../report/classify.ts';
 import { categorize } from './categories.ts';
+import { OVERRIDES, findOverrideIn, parsePrivateOverrides, type Override } from './overrides.ts';
 
 function sender(email: string, extra: Partial<SenderStats> = {}): SenderStats {
   const domain = email.split('@')[1] ?? '';
@@ -50,13 +52,30 @@ test('reviewed keep decisions survive low engagement', () => {
 });
 
 // Colleagues and family mail from domains that also send automated notices. Labelling a person's
-// message "Filed/Accounts" is both wrong and quietly insulting.
+// message "Filed/Accounts" is both wrong and quietly insulting. The addresses themselves live in
+// data/private-overrides.json, so this asserts the mechanism against a synthetic stand-in.
 test('people are never filed or labelled', () => {
-  for (const email of ['redacted-person-1@example.com', 'redacted-person-2@example.com', 'redacted-person-5@example.com', 'redacted-person-7@example.com']) {
-    equal(classify(sender(email)).tier, 'E_NEVER_TOUCH', email);
-    equal(labelFor(sender(email)), null, email);
-  }
+  const person: Override = { emails: ['a.colleague@example.com'], action: 'keep', category: null };
+  const match = findOverrideIn([person, ...OVERRIDES], 'a.colleague@example.com', 'example.com');
+  equal(match?.action, 'keep');
+  equal(match?.category, null);
   equal(labelFor(sender('someone@biggerpockets.com', { contacted: true })), null, 'contacted senders lose the label');
+});
+
+// The private file is loaded ahead of the public ledger for exactly this reason: a domain rule
+// below would otherwise claim a human correspondent before the People entry was ever consulted.
+test('private entries outrank the public ledger', () => {
+  const asPerson: Override = { emails: ['messages-noreply@linkedin.com'], action: 'keep', category: null };
+  equal(findOverrideIn(OVERRIDES, 'messages-noreply@linkedin.com', 'linkedin.com')?.category, 'social');
+  equal(findOverrideIn([asPerson, ...OVERRIDES], 'messages-noreply@linkedin.com', 'linkedin.com')?.category, null);
+});
+
+// A dropped entry here silently unprotects a person, so a malformed file must never parse to "none".
+test('the private overrides template is valid', () => {
+  const raw = readFileSync(new URL('../../data/private-overrides.example.json', import.meta.url), 'utf8');
+  const entries = parsePrivateOverrides(raw);
+  equal(entries.length > 0, true);
+  equal(entries[0]?.action, 'keep');
 });
 
 test('sibling addresses on one domain can take different labels', () => {

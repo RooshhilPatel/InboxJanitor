@@ -2,6 +2,8 @@ node_modules/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# Real names and private relay aliases. The .example.json alongside it is the committed template.
+data/private-overrides.json
 out/
 .env
 .env.local
