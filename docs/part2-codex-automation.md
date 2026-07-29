@@ -3,7 +3,8 @@
 Drop-in prompt for a Codex cron, modelled on the proven `mega-newsletter` automation. Schedule it
 **after** the newsletter run so newsletters are already out of the inbox.
 
-**Deployed 2026-07-26**, paused pending the quarantine flip.
+**Deployed 2026-07-26**, still paused. Prompt updated 2026-07-29 for the private-overrides split;
+that change is live in `automation.toml` and this file is kept identical to it.
 
 - Automation ID: `inbox-janitor-codex-automation`
 - Memory: `~/.codex/automations/inbox-janitor-codex-automation/memory.md` — Codex derives this path
@@ -15,6 +16,11 @@ Drop-in prompt for a Codex cron, modelled on the proven `mega-newsletter` automa
 
 Do not enable this until Phase 2 filters have completed a quarantine review. Running it against an
 unfiltered 3000-message inbox burns tokens on mail that a free Gmail filter should have handled.
+
+That gate is now satisfied — `Janitor/Quarantine` was reviewed and emptied by hand on 2026-07-29 —
+so enabling is a judgement call rather than a blocked one. Filters remain in quarantine mode, which
+does not affect this automation either way: quarantined mail skips the inbox, and this only searches
+`in:inbox`.
 
 ---
 
@@ -54,9 +60,15 @@ When uncertain, classify REVIEW. An unnecessary REVIEW costs me five seconds; a 
 me a missed bill, reply, or deadline.
 
 NEVER-TRASH LIST
-Before classifying, read src/rules/overrides.ts in the working directory. Every sender with
-action: 'keep' is never trashed, and nothing in the people block is ever touched. That file is the
-source of truth; the list below is a summary that may lag it.
+Before classifying, read BOTH of these files in the working directory:
+  1. data/private-overrides.json -- real people (colleagues, family) and private relay aliases.
+     Authoritative for the people block. It is gitignored, so it exists only on this machine.
+     If it is missing, unreadable, or fails to parse, STOP and trash nothing. Absence means the
+     protection list failed to load, not that there is nobody to protect.
+  2. src/rules/overrides.ts -- the public rule ledger.
+Every sender with action: 'keep' in either file is never trashed, and no address appearing in
+data/private-overrides.json is ever touched, whatever its action. Together they are the source of
+truth; the list below is a summary that may lag them.
 
 These are protected regardless of any other signal:
 - any sender I have ever replied to or emailed
@@ -196,6 +208,15 @@ top proposed rules, and anything that arrived after the cutoff for the next run 
 - **Labels are deliberately off-limits.** Two systems applying `Filed/*` with different logic is how
   a taxonomy rots. The compiler owns filing; this automation earns a sender its filter and then
   stops caring about it.
-- **The prompt reads `src/rules/overrides.ts` rather than trusting its own copy** of the never-trash
-  list. A hardcoded duplicate drifts from the ledger the moment a rule changes, and the drift is
-  invisible until something is wrongly trashed.
+- **The prompt reads the ledger rather than trusting its own copy** of the never-trash list. A
+  hardcoded duplicate drifts from the ledger the moment a rule changes, and the drift is invisible
+  until something is wrongly trashed.
+- **Splitting the ledger caused exactly that drift on 2026-07-29.** Moving the people block into
+  `data/private-overrides.json` left the prompt pointing at a file that no longer contained it, while
+  still asserting "nothing in the people block is ever touched". Reading from source does not protect
+  you if the source moves. Whenever the ledger is restructured, this prompt is a downstream consumer
+  that has to be re-pointed — and the reason it says *both* files, explicitly, rather than "the
+  overrides".
+- **A missing private file is a hard stop, not an empty list.** The compiler can treat absence as
+  "no private entries" because it only ever adds protection. This automation deletes mail, so the
+  same absence has to fail closed.
