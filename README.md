@@ -37,7 +37,15 @@ scopes `gmail.readonly` + `gmail.settings.basic`, then a **Desktop app** OAuth c
 npm install
 cp .env.example .env      # fill in GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET
 npm run auth              # opens consent, writes GMAIL_REFRESH_TOKEN
+
+# Optional: colleagues, family, private relay aliases — anyone whose mail must never be
+# filed or relabelled. Gitignored, so real names stay out of the published ledger.
+cp data/private-overrides.example.json data/private-overrides.json
 ```
+
+Entries in `data/private-overrides.json` are merged *ahead* of `src/rules/overrides.ts`, so they
+outrank every other rule. If the file is missing the ledger simply runs without them; if it is
+present but malformed the run aborts rather than silently dropping a "never touch this person" rule.
 
 ## Use
 
